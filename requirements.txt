@@ -1,0 +1,7 @@
+ultralytics>=8.3
+opencv-python
+insightface
+onnxruntime
+gradio>=4.0
+lap
+numpy
