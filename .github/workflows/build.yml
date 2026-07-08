@@ -3,7 +3,7 @@ name: Build Apps
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:   # 都可以喺 Actions tab 手動撳掣 build
+  workflow_dispatch:   # Actions tab 手動撳掣都 build 到
 
 jobs:
   build:
@@ -28,9 +28,13 @@ jobs:
 
       - name: Install deps (CPU torch，包細啲)
         run: |
-          python -m pip install -U pip
+          python -m pip install -U pip setuptools wheel
+          pip install cython numpy
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt pyinstaller
+          pip install ultralytics opencv-python-headless lap gradio onnxruntime
+          pip install insightface --no-build-isolation
+          pip install pyinstaller
+        shell: bash
 
       - name: Build with PyInstaller
         run: >
@@ -47,12 +51,30 @@ jobs:
           --collect-data onnxruntime
           --hidden-import scipy.special._cdflib
         shell: bash
+
       - name: Ad-hoc codesign (mac)
         if: runner.os == 'macOS'
-        run: codesign --force --deep -s - dist/FancamStudio
+        run: |
+          find dist/FancamStudio -type f \( -name "*.so" -o -name "*.dylib" \) \
+            -exec codesign --force -s - {} \;
+          codesign --force -s - dist/FancamStudio/FancamStudio
+
+      - name: Add fix.command helper (mac)
+        if: runner.os == 'macOS'
+        run: |
+          cat > dist/FancamStudio/fix.command <<'SH'
+          #!/bin/bash
+          # 落載完雙擊呢個檔：清 quarantine + 本機重簽，之後直接開 FancamStudio
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          xattr -cr "$DIR"
+          codesign --force -s - "$DIR/FancamStudio"
+          echo "✅ 搞掂，而家可以雙擊 FancamStudio 開 app"
+          SH
+          chmod +x dist/FancamStudio/fix.command
+
       - name: Zip (mac)
         if: runner.os == 'macOS'
-        run: cd dist && zip -rq ../FancamStudio-${{ matrix.name }}.zip FancamStudio
+        run: ditto -c -k --keepParent dist/FancamStudio FancamStudio-${{ matrix.name }}.zip
 
       - name: Zip (windows)
         if: runner.os == 'Windows'
