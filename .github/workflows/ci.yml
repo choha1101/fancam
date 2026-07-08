@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install deps (CI 唔裝 insightface，面容測試另外行)
+        run: |
+          python -m pip install -U pip
+          pip install ultralytics opencv-python-headless lap numpy pytest
+
+      - name: Cache YOLO weights
+        uses: actions/cache@v4
+        with:
+          path: yolov8n.pt
+          key: yolov8n-v8.4
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ruff && ruff check . --ignore E501,E741
+
+  release:
+    # 打 tag（例如 v2.1.0）自動包 zip 出 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package
+        run: zip -r fancam-studio-${{ github.ref_name }}.zip . -x "*.git*" "*.pt" "tests/*"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: fancam-studio-*.zip
+          generate_release_notes: true
