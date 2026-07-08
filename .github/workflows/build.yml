@@ -31,7 +31,7 @@ jobs:
           python -m pip install -U pip setuptools wheel
           pip install cython numpy
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install ultralytics opencv-python-headless lap gradio onnxruntime
+          pip install ultralytics opencv-python-headless lap gradio onnxruntime rawpy
           pip install insightface --no-build-isolation
           pip install pyinstaller
         shell: bash
@@ -42,12 +42,15 @@ jobs:
           --add-data "botsort_reid.yaml:."
           --add-data "app.py:."
           --add-data "fancam_core.py:."
+          --add-data "ingest.py:."
+          --hidden-import ingest
           --collect-all gradio
           --collect-all gradio_client
           --collect-all safehttpx
           --collect-all groovy
           --collect-all ultralytics
           --collect-all insightface
+          --collect-all rawpy
           --collect-data onnxruntime
           --hidden-import scipy.special._cdflib
         shell: bash
@@ -64,11 +67,13 @@ jobs:
         run: |
           cat > dist/FancamStudio/fix.command <<'SH'
           #!/bin/bash
-          # 落載完雙擊呢個檔：清 quarantine + 本機重簽，之後直接開 FancamStudio
+          # 雙擊：清 quarantine + 重簽 + 開 app（所有輸出寫入 debug_log.txt）
           DIR="$(cd "$(dirname "$0")" && pwd)"
           xattr -cr "$DIR"
+          find "$DIR" -type f \( -name "*.so" -o -name "*.dylib" \) -exec codesign --force -s - {} \; 2>/dev/null
           codesign --force -s - "$DIR/FancamStudio"
-          echo "✅ 搞掂，而家可以雙擊 FancamStudio 開 app"
+          echo "✅ 修復完成，啟動中…（如果 app 死咗，開 debug_log.txt 睇死因）"
+          "$DIR/FancamStudio" 2>&1 | tee "$DIR/debug_log.txt"
           SH
           chmod +x dist/FancamStudio/fix.command
 
