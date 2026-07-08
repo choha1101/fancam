@@ -40,6 +40,7 @@ jobs:
         run: >
           pyinstaller launcher.py --name FancamStudio --onedir --noconfirm
           --add-data "botsort_reid.yaml:."
+          --add-data "botsort_fast.yaml:."
           --add-data "app.py:."
           --add-data "fancam_core.py:."
           --add-data "ingest.py:."
