@@ -47,7 +47,9 @@ jobs:
           --collect-data onnxruntime
           --hidden-import scipy.special._cdflib
         shell: bash
-
+      - name: Ad-hoc codesign (mac)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep -s - dist/FancamStudio
       - name: Zip (mac)
         if: runner.os == 'macOS'
         run: cd dist && zip -rq ../FancamStudio-${{ matrix.name }}.zip FancamStudio
