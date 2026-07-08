@@ -11,7 +11,7 @@ import fancam_core as fc
 S = {}  # session: tracks/apps/groups/meta/video/keyframes
 
 
-def analyze(video, model_size, progress=gr.Progress()):
+def analyze(video, model_size, speed, progress=gr.Progress()):
     if video is None:
         raise gr.Error("請先上載影片")
     from ingest import prepare_video
@@ -20,6 +20,9 @@ def analyze(video, model_size, progress=gr.Progress()):
     except ValueError as e:
         raise gr.Error(str(e))
     model = {"快 (n)": "yolov8n.pt", "平衡 (m)": "yolov8m.pt", "最準 (x)": "yolov8x.pt"}[model_size]
+    speed_map = {"極速（stride 3, 640px）": (3, 640), "快（stride 2, 960px）": (2, 960),
+                 "最準（逐格, 1280px）": (1, 1280)}
+    stride, imgsz = speed_map[speed]
     fc._YOLO = None
     fc.get_yolo(model)
 
@@ -27,7 +30,8 @@ def analyze(video, model_size, progress=gr.Progress()):
         progress(p * 0.9, desc=msg)
 
     video = video.name if hasattr(video, "name") else video
-    tracks, apps, meta = fc.track_video(video, model_name=model, progress_cb=cb)
+    tracks, apps, meta = fc.track_video(video, model_name=model, progress_cb=cb,
+                                        stride=stride, imgsz=imgsz)
     groups = fc.stitch_tracklets(tracks, apps, meta)
     S.update(video=video, tracks=tracks, apps=apps, groups=groups, meta=meta, keyframes=[])
     img = fc.grab_frame(video, 0, tracks, groups)
@@ -123,7 +127,9 @@ with gr.Blocks(title="Fancam Studio v2", theme=gr.themes.Soft()) as demo:
             video_in = gr.File(label="原片（mp4/mov/webm/mkv/hevc/mxf/prores… 自動轉換）", file_types=["video", ".webm", ".mkv", ".mts", ".m2ts", ".mxf", ".ts"])
             with gr.Row():
                 model_size = gr.Radio(["快 (n)", "平衡 (m)", "最準 (x)"], value="平衡 (m)", label="偵測模型")
-                analyze_btn = gr.Button("1️⃣ 分析全片", variant="primary")
+            speed = gr.Radio(["極速（stride 3, 640px）", "快（stride 2, 960px）", "最準（逐格, 1280px）"],
+                             value="快（stride 2, 960px）", label="速度模式")
+            analyze_btn = gr.Button("1️⃣ 分析全片", variant="primary")
             status = gr.Markdown()
             frame_view = gr.Image(label="畫面（撳人物 = 指定目標 / 加修正 keyframe）", interactive=False)
             t_slider = gr.Slider(0, 600, value=0, step=0.2, label="時間軸（秒）")
@@ -150,7 +156,7 @@ with gr.Blocks(title="Fancam Studio v2", theme=gr.themes.Soft()) as demo:
             export_btn = gr.Button("✨ 輸出", variant="primary", size="lg")
             out_video = gr.Video(label="輸出預覽")
 
-    analyze_btn.click(analyze, [video_in, model_size], [frame_view, group_pick, status])
+    analyze_btn.click(analyze, [video_in, model_size, speed], [frame_view, group_pick, status])
     t_slider.change(show_frame, t_slider, frame_view)
     frame_view.select(click_target, [t_slider], [frame_view, status])
     face_btn.click(auto_face, [ref_photos], [status, group_pick])
