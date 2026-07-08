@@ -14,6 +14,11 @@ S = {}  # session: tracks/apps/groups/meta/video/keyframes
 def analyze(video, model_size, progress=gr.Progress()):
     if video is None:
         raise gr.Error("請先上載影片")
+    from ingest import prepare_video
+    try:
+        video, ingest_msg = prepare_video(video, progress_cb=lambda p, m: progress(p * 0.05, desc=m))
+    except ValueError as e:
+        raise gr.Error(str(e))
     model = {"快 (n)": "yolov8n.pt", "平衡 (m)": "yolov8m.pt", "最準 (x)": "yolov8x.pt"}[model_size]
     fc._YOLO = None
     fc.get_yolo(model)
@@ -21,6 +26,7 @@ def analyze(video, model_size, progress=gr.Progress()):
     def cb(p, msg):
         progress(p * 0.9, desc=msg)
 
+    video = video.name if hasattr(video, "name") else video
     tracks, apps, meta = fc.track_video(video, model_name=model, progress_cb=cb)
     groups = fc.stitch_tracklets(tracks, apps, meta)
     S.update(video=video, tracks=tracks, apps=apps, groups=groups, meta=meta, keyframes=[])
@@ -114,7 +120,7 @@ with gr.Blocks(title="Fancam Studio v2", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎥 Fancam Studio v2\n飯拍 + 運動追蹤 · 準備度評分 · 覆核修正 · 任意比例/解像度")
     with gr.Row():
         with gr.Column(scale=3):
-            video_in = gr.Video(label="原片")
+            video_in = gr.File(label="原片（mp4/mov/webm/mkv/hevc/mxf/prores… 自動轉換）", file_types=["video", ".webm", ".mkv", ".mts", ".m2ts", ".mxf", ".ts"])
             with gr.Row():
                 model_size = gr.Radio(["快 (n)", "平衡 (m)", "最準 (x)"], value="平衡 (m)", label="偵測模型")
                 analyze_btn = gr.Button("1️⃣ 分析全片", variant="primary")
@@ -122,7 +128,7 @@ with gr.Blocks(title="Fancam Studio v2", theme=gr.themes.Soft()) as demo:
             frame_view = gr.Image(label="畫面（撳人物 = 指定目標 / 加修正 keyframe）", interactive=False)
             t_slider = gr.Slider(0, 600, value=0, step=0.2, label="時間軸（秒）")
             with gr.Tab("🎤 飯拍模式（面容自動識別）"):
-                ref_photos = gr.File(label="目標成員參考相 1–3 張", file_count="multiple", file_types=["image"])
+                ref_photos = gr.File(label="目標成員參考相 1–3 張（JPG/PNG 或相機 RAW：NEF/CR3/ARW/DNG…）", file_count="multiple", file_types=["image", ".nef", ".cr2", ".cr3", ".arw", ".raf", ".rw2", ".orf", ".dng", ".pef"])
                 face_btn = gr.Button("2️⃣ 自動認人鎖定")
             with gr.Tab("⚽ 運動 / 手動模式"):
                 gr.Markdown("直接喺上面畫面**撳目標人物**（球員背向鏡頭都得）。轉波衫顏色相近跟錯咗，就去嗰秒再撳一下修正。")
