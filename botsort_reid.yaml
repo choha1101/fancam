@@ -1,0 +1,13 @@
+# BoT-SORT tuned for fancam/sports: ReID on + global motion compensation
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 90          # 遮擋 3 秒內都保住 ID
+match_thresh: 0.8
+fuse_score: True
+gmc_method: sparseOptFlow # 鏡頭移動補償（運動轉播必需）
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: True           # 外觀 ReID，大幅減少 ID switch
+model: auto
