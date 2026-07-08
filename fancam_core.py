@@ -17,6 +17,16 @@ from ultralytics import YOLO
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRACKER_CFG = os.path.join(HERE, "botsort_reid.yaml")
 
+
+def best_device():
+    """自動揀最快裝置：Apple MPS > NVIDIA CUDA > CPU"""
+    import torch
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
 # ---------------- models ----------------
 _YOLO = None
 _FACE_APP = None
@@ -73,8 +83,12 @@ def _body_embedding(frame, box):
 
 
 # ================= PASS 1: full-video tracking =================
-def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=1280,
-                progress_cb=None, sample_appearance_every=5):
+def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=960,
+                progress_cb=None, sample_appearance_every=5,
+                stride=2, device=None):
+    """stride=N 即係每 N 格先偵測一次，中間插值（快 N 倍，人物移動連續所以夠準）"""
+    if device is None:
+        device = best_device()
     cap = cv2.VideoCapture(video_path)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -91,8 +105,11 @@ def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=1280,
         ok, frame = cap.read()
         if not ok:
             break
+        if fi % stride != 0:
+            fi += 1
+            continue
         r = model.track(frame, classes=[0], persist=True, verbose=False,
-                        conf=conf, imgsz=imgsz, tracker=TRACKER_CFG)[0]
+                        conf=conf, imgsz=imgsz, tracker=TRACKER_CFG, device=device)[0]
         if r.boxes is not None and r.boxes.id is not None:
             for b in r.boxes:
                 tid = int(b.id.item())
@@ -107,6 +124,17 @@ def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=1280,
         if progress_cb and fi % 30 == 0:
             progress_cb(fi / max(total, 1), f"Pass 1 追蹤 {fi}/{total}")
     cap.release()
+
+    # stride 插值：同一 tid 相鄰兩次偵測之間嘅格，線性補返（gap 細所以準）
+    if stride > 1:
+        for tid, fr in tracks.items():
+            fs = sorted(fr)
+            for a, b in zip(fs, fs[1:]):
+                if 1 < b - a <= stride * 2:
+                    ba, bb = np.array(fr[a]), np.array(fr[b])
+                    for k in range(a + 1, b):
+                        t = (k - a) / (b - a)
+                        fr[k] = tuple(ba * (1 - t) + bb * t)
 
     apps = {}
     for tid, s in app_sums.items():
