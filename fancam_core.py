@@ -16,6 +16,34 @@ from ultralytics import YOLO
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRACKER_CFG = os.path.join(HERE, "botsort_reid.yaml")
+TRACKER_CFG_FAST = os.path.join(HERE, "botsort_fast.yaml")
+
+
+def make_tracking_proxy(video_path, height=720):
+    """出一條細proxy專門做追蹤（原片留返 render 用）。4K 片 decode 本身就係大瓶頸。
+    回傳 (proxy路徑, 座標放大倍數)"""
+    import tempfile
+    cap = cv2.VideoCapture(video_path)
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    if H <= height:
+        return video_path, 1.0
+    proxy = os.path.join(tempfile.gettempdir(),
+                         os.path.splitext(os.path.basename(video_path))[0] + f"_track{height}.mp4")
+    if not os.path.exists(proxy):
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", video_path,
+             "-vf", f"scale=-2:{height}", "-c:v", "libx264",
+             "-preset", "ultrafast", "-crf", "20", "-an", proxy],
+            check=True)
+    return proxy, H / height
+
+
+def scale_tracks(tracks, factor):
+    if factor == 1.0:
+        return tracks
+    return {tid: {fi: tuple(v * factor for v in box) for fi, box in fr.items()}
+            for tid, fr in tracks.items()}
 
 
 def best_device():
@@ -85,10 +113,12 @@ def _body_embedding(frame, box):
 # ================= PASS 1: full-video tracking =================
 def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=960,
                 progress_cb=None, sample_appearance_every=5,
-                stride=2, device=None):
+                stride=2, device=None, tracker_cfg=None):
     """stride=N 即係每 N 格先偵測一次，中間插值（快 N 倍，人物移動連續所以夠準）"""
     if device is None:
         device = best_device()
+    if tracker_cfg is None:
+        tracker_cfg = TRACKER_CFG
     cap = cv2.VideoCapture(video_path)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -109,7 +139,7 @@ def track_video(video_path, model_name="yolov8m.pt", conf=0.3, imgsz=960,
             fi += 1
             continue
         r = model.track(frame, classes=[0], persist=True, verbose=False,
-                        conf=conf, imgsz=imgsz, tracker=TRACKER_CFG, device=device)[0]
+                        conf=conf, imgsz=imgsz, tracker=tracker_cfg, device=device)[0]
         if r.boxes is not None and r.boxes.id is not None:
             for b in r.boxes:
                 tid = int(b.id.item())
@@ -222,6 +252,26 @@ def score_groups_by_face(video_path, tracks, groups, ref_emb, meta, samples_per_
                 sims.append(float(np.dot(f.normed_embedding, ref_emb)))
         scores[gid] = float(np.mean(sims)) if sims else -1.0
     cap.release()
+    return scores
+
+
+def score_groups_auto(tracks, groups, meta):
+    """唔使參考相嘅主角評分：出鏡率 × 置中程度 × 平均大細（C 位偵測）"""
+    W, H, total = meta["W"], meta["H"], meta["total"]
+    scores = {}
+    for gid, tids in groups.items():
+        n, cen, area = 0, 0.0, 0.0
+        for t in tids:
+            for fi, (x1, y1, x2, y2) in tracks[t].items():
+                n += 1
+                cx = (x1 + x2) / 2
+                cen += 1.0 - abs(cx - W/2) / (W/2)          # 越近中線分越高
+                area += (x2-x1) * (y2-y1) / (W*H)
+        if n == 0:
+            scores[gid] = 0.0
+            continue
+        presence = n / total
+        scores[gid] = presence * (0.5 + 0.5 * cen/n) * (0.3 + 0.7 * min(area/n * 20, 1.0))
     return scores
 
 
@@ -382,6 +432,92 @@ def render(video_path, boxes, meta, out_path,
         check=True)
     os.remove(tmp)
     return out_path
+
+
+def render_multi(video_path, named_boxes, meta, out_dir,
+                 aspect_w=9, aspect_h=16, out_height=1080,
+                 zoom=1.0, smooth_alpha=0.10, headroom=0.12,
+                 pose_overlay=False, progress_cb=None):
+    """
+    全員模式：named_boxes = {名: boxes}，一次 decode 同時出 N 條片。
+    pose_overlay=True 會用 YOLOv8-pose 喺每條 crop 畫骨架。
+    回傳 [輸出路徑]
+    """
+    W, H, fps = meta["W"], meta["H"], meta["fps"]
+    ar = aspect_w / aspect_h
+    out_h = int(round(out_height / 2) * 2)
+    out_w = int(round(out_h * ar / 2) * 2)
+
+    plans = {}
+    for name, boxes in named_boxes.items():
+        cs = np.array([_center(b) for b in boxes])
+        hs = np.array([b[3] - b[1] for b in boxes])
+        cx = _ema(cs[:, 0], smooth_alpha)
+        cy = _ema(cs[:, 1], smooth_alpha)
+        ch = _ema(hs, smooth_alpha)
+        crop_h = np.clip(ch * 1.35 * zoom, H * 0.25, H)
+        crop_w = crop_h * ar
+        over = crop_w > W
+        crop_w[over] = W
+        crop_h[over] = W / ar
+        plans[name] = (cx, cy, crop_w, crop_h)
+
+    pose_model = YOLO("yolov8n-pose.pt") if pose_overlay else None
+    SKEL = [(5,7),(7,9),(6,8),(8,10),(5,6),(5,11),(6,12),(11,12),
+            (11,13),(13,15),(12,14),(14,16),(0,5),(0,6)]
+
+    os.makedirs(out_dir, exist_ok=True)
+    writers, tmps = {}, {}
+    for name in plans:
+        tmp = os.path.join(out_dir, f"{name}.video.mp4")
+        tmps[name] = tmp
+        writers[name] = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"),
+                                        fps, (out_w, out_h))
+
+    cap = cv2.VideoCapture(video_path)
+    n = min(len(b) for b in named_boxes.values())
+    i = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok or i >= n:
+            break
+        for name, (cx, cy, cw, chh) in plans.items():
+            w2, h2 = cw[i]/2, chh[i]/2
+            x = float(np.clip(cx[i], w2, W - w2))
+            y = float(np.clip(cy[i] - h2*headroom, h2, H - h2))
+            crop = frame[int(y-h2):int(y+h2), int(x-w2):int(x+w2)]
+            out = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+            if pose_model is not None:
+                pr = pose_model(out, verbose=False, conf=0.4)[0]
+                if pr.keypoints is not None and len(pr.keypoints) > 0:
+                    kps = pr.keypoints.xy[0].cpu().numpy()
+                    kconf = pr.keypoints.conf[0].cpu().numpy() if pr.keypoints.conf is not None else np.ones(len(kps))
+                    for a, b in SKEL:
+                        if a < len(kps) and b < len(kps) and kconf[a] > 0.5 and kconf[b] > 0.5:
+                            cv2.line(out, tuple(kps[a].astype(int)), tuple(kps[b].astype(int)),
+                                     (80, 255, 160), 2)
+                    for k, kc in zip(kps, kconf):
+                        if kc > 0.5:
+                            cv2.circle(out, tuple(k.astype(int)), 3, (255, 200, 60), -1)
+            writers[name].write(out)
+        i += 1
+        if progress_cb and i % 30 == 0:
+            progress_cb(i / n, f"全員輸出 {i}/{n}（{len(plans)} 人同步）")
+
+    cap.release()
+    outs = []
+    for name, vw in writers.items():
+        vw.release()
+        final = os.path.join(out_dir, f"{name}.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", tmps[name], "-i", video_path,
+             "-map", "0:v", "-map", "1:a?",
+             "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", final],
+            check=True)
+        os.remove(tmps[name])
+        outs.append(final)
+    return outs
 
 
 # ================= session save/load =================
