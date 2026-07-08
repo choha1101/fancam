@@ -1,4 +1,4 @@
-# BoT-SORT tuned for fancam/sports: ReID on + global motion compensation
+# BoT-SORT tuned for fancam/sports: ReID on + global motion compensation (手持/搖鏡都穩)
 tracker_type: botsort
 track_high_thresh: 0.25
 track_low_thresh: 0.1
@@ -10,4 +10,4 @@ gmc_method: sparseOptFlow # 鏡頭移動補償（運動轉播必需）
 proximity_thresh: 0.5
 appearance_thresh: 0.8
 with_reid: True           # 外觀 ReID，大幅減少 ID switch
-model: auto
+model: yolov8n-cls.pt   # 固定維度 ReID embedding（auto 喺部分 imgsz 有 bug）
