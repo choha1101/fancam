@@ -1,0 +1,13 @@
+# 極速版 tracker：關 ReID + 關 GMC（離線縫合會補返準確度）
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 90
+match_thresh: 0.8
+fuse_score: True
+gmc_method: none
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto  # with_reid=False 唔會用到，但 schema 要求存在
