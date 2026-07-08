@@ -37,10 +37,11 @@ def get_face_app():
 
 
 def build_reference_embedding(image_paths):
+    from ingest import load_image
     app = get_face_app()
     embs = []
     for p in image_paths:
-        img = cv2.imread(p)
+        img = load_image(p)
         if img is None:
             continue
         faces = app.get(img)
