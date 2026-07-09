@@ -28,7 +28,8 @@ jobs:
 
       - name: Install deps (CPU torch，包細啲)
         run: |
-          python -m pip install -U pip setuptools wheel
+          python -m pip install -U pip wheel
+          pip install "setuptools<81"   # 新版 setuptools 刪咗 pkg_resources.NullProvider，PyInstaller 會 crash
           pip install cython numpy
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install ultralytics opencv-python-headless lap gradio onnxruntime rawpy
@@ -40,7 +41,6 @@ jobs:
         run: >
           pyinstaller launcher.py --name FancamStudio --onedir --noconfirm
           --add-data "botsort_reid.yaml:."
-          --add-data "botsort_fast.yaml:."
           --add-data "app.py:."
           --add-data "fancam_core.py:."
           --add-data "ingest.py:."
