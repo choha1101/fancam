@@ -294,7 +294,17 @@ def keyframe_hits(tracks, groups, keyframes):
 
 
 # ================= TIMELINE + CONFIDENCE =================
-def build_timeline(tracks, groups, selected_gids, meta, kf_hits=None):
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix = max(0, min(ax2, bx2) - max(ax1, bx1))
+    iy = max(0, min(ay2, by2) - max(ay1, by1))
+    inter = ix * iy
+    ua = (ax2-ax1)*(ay2-ay1) + (bx2-bx1)*(by2-by1) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def build_timeline(tracks, groups, selected_gids, meta, kf_hits=None, overlap_th=0.30):
     """
     合併選中 group(s) 逐格 box；keyframe 修正可以喺時間軸中途切換 group。
     回傳 (boxes 已填補, conf 逐格信心 1/0.5/0)
@@ -319,6 +329,20 @@ def build_timeline(tracks, groups, selected_gids, meta, kf_hits=None):
                         boxes[fi] = box
 
     conf = np.array([1.0 if b is not None else 0.0 for b in boxes])
+
+    # 人物重疊偵測：目標框同其他人框 IoU 過高 → 交叉走位時刻，好易靜雞雞跟錯人
+    # 就算有偵測都要降信心，逼佢入覆核清單（原作者講嘅「동선 겹침」問題）
+    sel_tids = {t for g in (groups if kf_hits else {g: groups[g] for g in selected_gids if g in groups}).values() for t in g} if not kf_hits else None
+    for fi, b in enumerate(boxes):
+        if b is None:
+            continue
+        for tid, fr in tracks.items():
+            ob = fr.get(fi)
+            if ob is None or ob == b:
+                continue
+            if _iou(b, ob) > overlap_th:
+                conf[fi] = min(conf[fi], 0.6)
+                break
 
     filled = list(boxes)
     i = 0
@@ -373,6 +397,69 @@ def readiness(conf):
     return round(100 * float((np.asarray(conf) >= 0.9).mean()), 1)
 
 
+def face_guard(video_path, boxes, conf, tracks, groups, ref_emb, meta,
+               check_every_sec=1.0, sim_th=0.30, progress_cb=None):
+    """
+    沿住已建好嘅 timeline 定期用面容驗證身份（重疊時段後加密抽查）。
+    發現跟錯人而畫面有另一個相似度更高嘅框 → 產生自動修正 keyframe。
+    回傳 (auto_kf_hits, report)
+    """
+    face_app = get_face_app()
+    fps, W = meta["fps"], meta["W"]
+    step = max(int(fps * check_every_sec), 1)
+    checkpoints = set(range(0, len(boxes), step))
+    # 重疊/低信心段結束後即刻加抽查點（跟錯人最常發生喺呢啲位之後）
+    for i in range(1, len(conf)):
+        if conf[i-1] < 0.9 <= conf[i]:
+            checkpoints.add(i)
+    tid2gid = {t: g for g, ts in groups.items() for t in ts}
+
+    cap = cv2.VideoCapture(video_path)
+    auto_kf, report = [], []
+    for n_done, fi in enumerate(sorted(checkpoints)):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ok, frame = cap.read()
+        if not ok or boxes[fi] is None:
+            continue
+
+        def face_sim(box):
+            x1, y1, x2, y2 = map(int, box)
+            pad = int((y2 - y1) * 0.1)
+            crop = frame[max(0, y1-pad):y2, max(0, x1-pad):min(W, x2+pad)]
+            if crop.size == 0:
+                return None
+            faces = face_app.get(crop)
+            if not faces:
+                return None
+            f = max(faces, key=lambda x: x.det_score)
+            return float(np.dot(f.normed_embedding, ref_emb))
+
+        cur = face_sim(boxes[fi])
+        if cur is None:
+            continue  # 背向/側面驗唔到，唔亂改
+        if cur >= sim_th:
+            continue  # 身份正確
+        # 目標唔似 → 搵吓其他框有冇更似嘅
+        best_tid, best_sim = None, cur
+        for tid, fr in tracks.items():
+            ob = fr.get(fi)
+            if ob is None or ob == boxes[fi]:
+                continue
+            s = face_sim(ob)
+            if s is not None and s > best_sim and s >= sim_th:
+                best_tid, best_sim = tid, s
+        if best_tid is not None:
+            x1, y1, x2, y2 = fr_box = tracks[best_tid][fi]
+            auto_kf.append((fi, (x1+x2)/2, (y1+y2)/2))
+            report.append(f"{fi/fps:.1f}s：跟錯人（相似度 {cur:.2f}）→ 自動切去 G{tid2gid[best_tid]}（{best_sim:.2f}）")
+        else:
+            report.append(f"{fi/fps:.1f}s：目標面容唔匹配（{cur:.2f}）但搵唔到更似嘅人 — 建議人手覆核")
+        if progress_cb:
+            progress_cb(n_done / max(len(checkpoints), 1), f"Face-Guard 驗證 {n_done}/{len(checkpoints)}")
+    cap.release()
+    return auto_kf, report
+
+
 # ================= RENDER =================
 def _ema(series, alpha):
     out = np.empty(len(series), dtype=float)
@@ -385,7 +472,7 @@ def _ema(series, alpha):
 def render(video_path, boxes, meta, out_path,
            aspect_w=9, aspect_h=16, out_height=1920,
            zoom=1.0, smooth_alpha=0.10, headroom=0.12,
-           progress_cb=None):
+           progress_cb=None, preview_cb=None):
     """任意比例 aspect_w:aspect_h、任意輸出高度（闊度自動計，2 對齊）"""
     W, H, fps = meta["W"], meta["H"], meta["fps"]
     ar = aspect_w / aspect_h
@@ -417,7 +504,10 @@ def render(video_path, boxes, meta, out_path,
         x = float(np.clip(cx[i], w2, W - w2))
         y = float(np.clip(cy[i] - h2*headroom, h2, H - h2))
         crop = frame[int(y-h2):int(y+h2), int(x-w2):int(x+w2)]
-        vw.write(cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4))
+        out_frame = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+        vw.write(out_frame)
+        if preview_cb and i % max(int(fps), 1) == 0:  # 每秒一張實時預覽
+            preview_cb(cv2.cvtColor(out_frame, cv2.COLOR_BGR2RGB), i / n)
         i += 1
         if progress_cb and i % 30 == 0:
             progress_cb(i / n, f"輸出中 {i}/{n}")
