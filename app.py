@@ -3,7 +3,7 @@ Fancam Studio v2 — UI
 Step 1 分析全片（一次過，之後可以任意改設定重出，唔使再追蹤）
 Step 2 揀目標：飯拍=參考相自動認人 / 運動=喺畫面撳個人（keyframe）
 Step 3 睇準備度% + 覆核低信心時段，撳圖修正
-Step 4 任意比例、任意解像度輸出z
+Step 4 任意比例、任意解像度輸出
 """
 import os
 import tempfile
@@ -45,8 +45,11 @@ def analyze(video, model_size, speed, progress=gr.Progress()):
         tracker_cfg=fc.TRACKER_CFG_FAST if fast_tracker else None)
     tracks = fc.scale_tracks(tracks, scale)
     if scale != 1.0:
-        cap0 = __import__("cv2").VideoCapture(video)
-        meta["W"] = int(cap0.get(3)); meta["H"] = int(cap0.get(4)); cap0.release()
+        import cv2
+        cap0 = cv2.VideoCapture(video)
+        meta["W"] = int(cap0.get(3))
+        meta["H"] = int(cap0.get(4))
+        cap0.release()
     groups = fc.stitch_tracklets(tracks, apps, meta)
     S.update(video=video, tracks=tracks, apps=apps, groups=groups, meta=meta, keyframes=[])
     img = fc.grab_frame(video, 0, tracks, groups)
