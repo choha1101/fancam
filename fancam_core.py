@@ -332,7 +332,6 @@ def build_timeline(tracks, groups, selected_gids, meta, kf_hits=None, overlap_th
 
     # 人物重疊偵測：目標框同其他人框 IoU 過高 → 交叉走位時刻，好易靜雞雞跟錯人
     # 就算有偵測都要降信心，逼佢入覆核清單（原作者講嘅「동선 겹침」問題）
-    sel_tids = {t for g in (groups if kf_hits else {g: groups[g] for g in selected_gids if g in groups}).values() for t in g} if not kf_hits else None
     for fi, b in enumerate(boxes):
         if b is None:
             continue
@@ -449,7 +448,7 @@ def face_guard(video_path, boxes, conf, tracks, groups, ref_emb, meta,
             if s is not None and s > best_sim and s >= sim_th:
                 best_tid, best_sim = tid, s
         if best_tid is not None:
-            x1, y1, x2, y2 = fr_box = tracks[best_tid][fi]
+            x1, y1, x2, y2 = tracks[best_tid][fi]
             auto_kf.append((fi, (x1+x2)/2, (y1+y2)/2))
             report.append(f"{fi/fps:.1f}s：跟錯人（相似度 {cur:.2f}）→ 自動切去 G{tid2gid[best_tid]}（{best_sim:.2f}）")
         else:
