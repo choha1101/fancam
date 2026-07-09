@@ -8,7 +8,6 @@ import os
 import subprocess
 import tempfile
 import cv2
-import numpy as np
 
 RAW_PHOTO_EXTS = {".nef", ".nrw", ".cr2", ".cr3", ".crw", ".arw", ".srf", ".sr2",
                   ".raf", ".rw2", ".orf", ".dng", ".pef", ".x3f"}
